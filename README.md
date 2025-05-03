@@ -24,7 +24,7 @@ chmlFrp-cli 是一个基于 Kotlin 开发的命令行工具，用于简化 FRP (
 - 从远程服务器获取 FRP 隧道配置列表
 - 支持通过命令行参数或交互式方式选择隧道配置
 - 自动生成并执行 FRP 客户端启动脚本
-- 跨平台支持 (Windows/Linux)：别问为什么不支持 MacOS，因为我没有Mac的机器
+- 跨平台支持 (Windows/Linux)：别问为什么不支持 MacOS，因为我没有Mac的机器(往里面放个Mac的frp客户端可能应该大概也能运行)
 - 支持 token 认证
 
 ## 系统要求
