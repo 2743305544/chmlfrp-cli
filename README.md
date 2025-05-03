@@ -41,7 +41,7 @@ chmlFrp-cli 是一个基于 Kotlin 开发的命令行工具，用于简化 FRP (
 ## 配置说明
 
 首次运行程序时，会在当前目录下创建 `user.config` 配置文件，格式如下：
-
+![img.png](img.png)
 ```
 token=您的token值
 ```
