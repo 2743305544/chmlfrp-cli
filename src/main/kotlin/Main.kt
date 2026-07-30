@@ -58,7 +58,10 @@ class FrpClient : Callable<Int> {
         .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    private val isWindows = System.getProperty("os.name").lowercase().contains("win")
+    private val osName = System.getProperty("os.name").lowercase()
+    private val isWindows = osName.contains("win")
+    private val isMac = osName.contains("mac") || osName.contains("darwin")
+    private val isLinux = !isWindows && !isMac
     private val configList = mutableListOf<FrpConfig>()
 
     private var accessToken: String = ""
@@ -69,12 +72,12 @@ class FrpClient : Callable<Int> {
         if (doLogin) return runLogin()
         if (doLogout) return runLogout()
 
-        if (!isWindows) {
+        if (isLinux) {
             try {
                 println("正在设置当前目录权限...")
                 val currentDir = File(".").absolutePath
-                ProcessBuilder("chmod", "-R", "777", currentDir).start().waitFor()
-                println("已设置当前目录权限为777")
+                ProcessBuilder("chmod", "-R", "755", currentDir).start().waitFor()
+                println("已设置当前目录权限")
             } catch (e: Exception) {
                 println("设置目录权限失败: ${e.message}")
             }
@@ -240,7 +243,7 @@ class FrpClient : Callable<Int> {
             } catch (e: Exception) {
                 println("注册协议处理器失败: ${e.message}")
             }
-        } else {
+        } else if (isLinux) {
             val javaExe = "$javaHome/bin/java"
             val desktopDir = File(System.getProperty("user.home"), ".local/share/applications")
             desktopDir.mkdirs()
@@ -257,6 +260,57 @@ class FrpClient : Callable<Int> {
                 ProcessBuilder("update-desktop-database", desktopDir.absolutePath).start().waitFor()
             } catch (_: Exception) {}
             println("已注册 chmlerp:// 协议处理器")
+        } else if (isMac) {
+            // macOS: create a minimal .app bundle to register the URL scheme
+            val javaExe = "$javaHome/bin/java"
+            val appDir = File(System.getProperty("user.home"), "Library/Application Support/ChmlFrpCLI/chmlfrp-handler.app")
+            val contentsDir = File(appDir, "Contents")
+            val macosDir = File(contentsDir, "MacOS")
+            macosDir.mkdirs()
+
+            // Info.plist
+            File(contentsDir, "Info.plist").writeText(
+                """<?xml version="1.0" encoding="UTF-8"?>
+                |<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+                |<plist version="1.0">
+                |<dict>
+                |    <key>CFBundleExecutable</key>
+                |    <string>chmlfrp-handler</string>
+                |    <key>CFBundleIdentifier</key>
+                |    <string>com.shiyi.chmlfrp</string>
+                |    <key>CFBundleName</key>
+                |    <string>ChmlFrp CLI</string>
+                |    <key>CFBundleURLTypes</key>
+                |    <array>
+                |        <dict>
+                |            <key>CFBundleURLName</key>
+                |            <string>ChmlFrp Protocol</string>
+                |            <key>CFBundleURLSchemes</key>
+                |            <array>
+                |                <string>chmlerp</string>
+                |            </array>
+                |        </dict>
+                |    </array>
+                |</dict>
+                |</plist>
+                """.trimMargin()
+            )
+
+            // Executable script
+            val handlerScript = File(macosDir, "chmlfrp-handler")
+            handlerScript.writeText(
+                "#!/bin/bash\n\"$javaExe\" -jar \"$jarPath\" \"\$1\"\n"
+            )
+            handlerScript.setExecutable(true)
+
+            // Register with LaunchServices
+            try {
+                val lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+                ProcessBuilder(lsregister, appDir.absolutePath).start().waitFor()
+                println("已注册 chmlerp:// 协议处理器 (macOS)")
+            } catch (e: Exception) {
+                println("注册协议处理器失败: ${e.message}")
+            }
         }
     }
 
@@ -558,6 +612,7 @@ class FrpClient : Callable<Int> {
                     if (pid != null && pid > 0) result[tunnelId] = pid
                 }
             } else {
+                // Linux and macOS: use ps
                 val proc = ProcessBuilder("sh", "-c", "ps -eo pid,args | grep '[f]rpc'")
                     .redirectErrorStream(true).start()
                 val output = proc.inputStream.bufferedReader().readText()
@@ -694,7 +749,7 @@ class FrpClient : Callable<Int> {
         try {
             if (isWindows) {
                 Runtime.getRuntime().exec(arrayOf("rundll32", "url.dll,FileProtocolHandler", url))
-            } else if (System.getProperty("os.name").lowercase().contains("mac")) {
+            } else if (isMac) {
                 Runtime.getRuntime().exec(arrayOf("open", url))
             } else {
                 Runtime.getRuntime().exec(arrayOf("xdg-open", url))
@@ -710,30 +765,56 @@ class FrpClient : Callable<Int> {
         val tempDir = File("temp")
         if (!tempDir.exists()) tempDir.mkdir()
 
-        if (isWindows) {
-            val frpcFile = File(tempDir, "frpc.exe")
-            // Extract embedded frpc if not present
-            if (!frpcFile.exists() || frpcFile.length() < 100000) {
-                val res = FrpClient::class.java.getResourceAsStream("/frpc-windows.exe")
-                if (res != null) {
-                    res.use { input ->
-                        frpcFile.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    println("已释放内置 frpc.exe")
-                }
-            }
-            if (frpcFile.exists() && frpcFile.length() > 100000) {
-                return frpcFile.absolutePath
-            }
-            // Fallback: current dir
-            val local = File("frpc.exe")
-            if (local.exists()) return local.absolutePath
-            return "frpc.exe"
-        } else {
-            val local = File("frpc")
-            if (local.exists()) return local.absolutePath
-            return "frpc"
+        // Determine platform-specific resource name
+        val arch = when (val a = System.getProperty("os.arch").lowercase()) {
+            "x86_64", "amd64" -> "amd64"
+            "aarch64", "arm64" -> "arm64"
+            else -> a
         }
+        val resourceName = when {
+            isWindows -> "/frpc-windows-$arch.exe"
+            isMac -> "/frpc-darwin-$arch"
+            else -> "/frpc-linux-$arch"
+        }
+        val localName = if (isWindows) "frpc.exe" else "frpc"
+        val frpcFile = File(tempDir, localName)
+
+        // Extract embedded binary
+        if (!frpcFile.exists() || frpcFile.length() < 100000) {
+            val res = FrpClient::class.java.getResourceAsStream(resourceName)
+            if (res != null) {
+                res.use { input ->
+                    frpcFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (!isWindows) frpcFile.setExecutable(true)
+                println("已释放内置 frpc ($resourceName)")
+            } else {
+                println("未找到内置 frpc ($resourceName)，尝试使用本地安装的 frpc")
+            }
+        }
+
+        if (frpcFile.exists() && frpcFile.length() > 100000) return frpcFile.absolutePath
+
+        // Fallback: look for local frpc
+        val candidates = if (isWindows) {
+            listOf(File("frpc.exe"), File(tempDir, "frpc.exe"))
+        } else {
+            listOf(File("frpc"), File("/usr/local/bin/frpc"), File("/usr/bin/frpc"))
+        }
+        for (f in candidates) {
+            if (f.exists()) return f.absolutePath
+        }
+        // Try PATH
+        try {
+            val cmd = if (isWindows) arrayOf("where", "frpc.exe") else arrayOf("sh", "-c", "command -v frpc")
+            val proc = ProcessBuilder(*cmd).redirectErrorStream(true).start()
+            val path = proc.inputStream.bufferedReader().readText().trim()
+            proc.waitFor()
+            if (path.isNotEmpty() && File(path).exists()) return path
+        } catch (_: Exception) {}
+
+        println("错误: 未找到 frpc，请下载对应平台的 frp 并放在程序同目录")
+        return localName
     }
 
     private fun startFrpClient(config: FrpConfig) {
@@ -803,48 +884,64 @@ class FrpClient : Callable<Int> {
                     shellFile.writeText(shellContent, Charsets.UTF_8)
                     shellFile.setExecutable(true)
 
-                    val terminals = listOf(
-                        arrayOf("gnome-terminal", "--", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash"),
-                        arrayOf("konsole", "--hold", "-e", "bash", shellFile.absolutePath),
-                        arrayOf("xterm", "-hold", "-e", "bash", shellFile.absolutePath),
-                        arrayOf("mate-terminal", "--", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash"),
-                        arrayOf("xfce4-terminal", "--hold", "-e", "bash ${shellFile.absolutePath}"),
-                        arrayOf("lxterminal", "-e", "bash -c 'bash ${shellFile.absolutePath}; exec bash'"),
-                        arrayOf("terminator", "-e", "bash -c 'bash ${shellFile.absolutePath}; exec bash'"),
-                        arrayOf("alacritty", "-e", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash"),
-                        arrayOf("kitty", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash")
-                    )
-
-                    var success = false
-                    for (terminal in terminals) {
+                    if (isMac) {
+                        // macOS: use Terminal.app via osascript
                         try {
-                            val pb = ProcessBuilder(*terminal)
-                            pb.redirectErrorStream(true)
-                            val proc = pb.start()
+                            val script = """tell application "Terminal"
+                                activate
+                                do script "bash '${shellFile.absolutePath}'"
+                            end tell"""
+                            ProcessBuilder("osascript", "-e", script).start()
                             delay(1000)
-                            if (!proc.isAlive && proc.exitValue() != 0) continue
-                            println("FRP客户端已在新窗口中启动 (${terminal[0]})")
-                            success = true
-                            break
+                            println("FRP客户端已在Terminal中启动")
                         } catch (_: Exception) {
-                            continue
+                            println("无法打开Terminal，请在当前终端手动运行: bash ${shellFile.absolutePath}")
                         }
-                    }
+                    } else {
+                        // Linux: try various terminal emulators
+                        val terminals = listOf(
+                            arrayOf("gnome-terminal", "--", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash"),
+                            arrayOf("konsole", "--hold", "-e", "bash", shellFile.absolutePath),
+                            arrayOf("xterm", "-hold", "-e", "bash", shellFile.absolutePath),
+                            arrayOf("mate-terminal", "--", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash"),
+                            arrayOf("xfce4-terminal", "--hold", "-e", "bash ${shellFile.absolutePath}"),
+                            arrayOf("lxterminal", "-e", "bash -c 'bash ${shellFile.absolutePath}; exec bash'"),
+                            arrayOf("terminator", "-e", "bash -c 'bash ${shellFile.absolutePath}; exec bash'"),
+                            arrayOf("alacritty", "-e", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash"),
+                            arrayOf("kitty", "bash", "-c", "bash ${shellFile.absolutePath}; exec bash")
+                        )
 
-                    if (!success) {
-                        try {
-                            val pb = ProcessBuilder("x-terminal-emulator", "-e", "bash ${shellFile.absolutePath}")
+                        var success = false
+                        for (terminal in terminals) {
+                            try {
+                                val pb = ProcessBuilder(*terminal)
+                                pb.redirectErrorStream(true)
+                                val proc = pb.start()
+                                delay(1000)
+                                if (!proc.isAlive && proc.exitValue() != 0) continue
+                                println("FRP客户端已在新窗口中启动 (${terminal[0]})")
+                                success = true
+                                break
+                            } catch (_: Exception) {
+                                continue
+                            }
+                        }
+
+                        if (!success) {
+                            try {
+                                val pb = ProcessBuilder("x-terminal-emulator", "-e", "bash ${shellFile.absolutePath}")
+                                pb.start()
+                                delay(1000)
+                                success = true
+                                println("FRP客户端已在系统默认终端中启动")
+                            } catch (_: Exception) {}
+                        }
+
+                        if (!success) {
+                            println("无法找到可用的终端模拟器，将在当前终端运行")
+                            val pb = ProcessBuilder("bash", shellFile.absolutePath)
                             pb.start()
-                            delay(1000)
-                            success = true
-                            println("FRP客户端已在系统默认终端中启动")
-                        } catch (_: Exception) {}
-                    }
-
-                    if (!success) {
-                        println("无法找到可用的终端模拟器，将在当前终端运行")
-                        val pb = ProcessBuilder("bash", shellFile.absolutePath)
-                        pb.start()
+                        }
                     }
                 }
             } catch (e: Exception) {

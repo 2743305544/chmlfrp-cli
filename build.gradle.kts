@@ -35,6 +35,7 @@ kotlin {
 }
 tasks {
     shadowJar {
+        archiveClassifier.set("")
         manifest {
             attributes["Main-Class"] = "com.shiyi.FrpClient"
         }
