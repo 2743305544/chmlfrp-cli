@@ -26,7 +26,7 @@ import kotlin.system.exitProcess
  */
 @Command(
     name = "chmlFrp-cli",
-    version = ["2.0.0"],
+    version = ["2.1.0"],
     description = ["命令行工具，用于获取远程FRP配置并启动FRP客户端"],
     mixinStandardHelpOptions = true
 )
@@ -145,6 +145,8 @@ class FrpClient : Callable<Int> {
         }
 
         while (true) {
+            configList.clear()
+            fetchRemoteConfigs()
             val running = getRunningFrpcProcesses()
             displayConfigList(running)
             val runningCount = running.size
@@ -152,6 +154,7 @@ class FrpClient : Callable<Int> {
             val hint = buildString {
                 append("操作: [数字]启动/停止")
                 if (runningCount > 0) append("  a全部停止")
+                append("  r刷新列表")
                 append("  exit退出")
             }
             println(hint)
@@ -159,6 +162,7 @@ class FrpClient : Callable<Int> {
             val input = readLine()?.trim() ?: ""
             when {
                 input.equals("q", true) || input.equals("exit", true) -> return 0
+                input.equals("r", true) -> { Thread.sleep(300); continue }
                 input.equals("a", true) -> { stopAllFrpc(getRunningFrpcProcesses()); Thread.sleep(500) }
                 else -> {
                     val index = input.toIntOrNull() ?: -1
@@ -982,7 +986,7 @@ class FrpClient : Callable<Int> {
                           \ \  \____\ \  \ \  \ \  \    \ \  \ \  \____\ \  \_| \ \  \\  \\ \  \___\|____________|\ \  \____\ \  \____\ \  \
                            \ \_______\ \__\ \__\ \__\    \ \__\ \_______\ \__\   \ \__\\ _\\ \__\                  \ \_______\ \_______\ \__\
                             \|_______|\|__|\|__|\|__|     \|__|\|_______|\|__|    \|__|\|__|\|__|                   \|_______|\|_______|\|__|
-                        version 2.0.0
+                        version 2.1.0
                     """.trimIndent()
                     println(CommandLine.Help.Ansi.AUTO.text("@|bold,cyan $banner|@"))
                     CommandLine.RunLast().execute(parseResult)
